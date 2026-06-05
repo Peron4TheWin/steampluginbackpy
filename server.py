@@ -87,7 +87,7 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
     # ----------------------------------------------------------
     # POST /remove/{appid}  — elimina el .lua del juego
     # ----------------------------------------------------------
-    @app.delete("/remove/{appid}")
+    @app.post("/remove/{appid}")
     async def remove_game(appid: str):
         try:
             os.remove(plugin_dir / f"{appid}.lua")
