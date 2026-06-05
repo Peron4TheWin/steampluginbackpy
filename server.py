@@ -95,11 +95,13 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
         except OSError as e:
             return Response(content=f"Error: {e}", status_code=500)
 
-    @app.post("/check/{appid}")
+    @app.get("/check/{appid}")
     async def check_game(appid: str):
         try:
-            os.path.isfile(plugin_dir / f"{appid}.lua")
-            return Response(content=f"{appid}.lua exists", status_code=200)
+            if os.path.isfile(plugin_dir / f"{appid}.lua"):
+                return Response(content=f"{appid}.lua exists", status_code=200)
+            else:
+                return Response(content=f"{appid}.lua does not exist", status_code=404)
         except OSError as e:
             return Response(content=f"Error: {e}", status_code=500)
 
