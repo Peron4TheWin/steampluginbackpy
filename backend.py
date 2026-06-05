@@ -214,7 +214,7 @@ async def save_key(request: Request):
         return Response(content=str(e), status_code=500)
 
 
-@app.post("/add/{appid}")
+@app.post("/{appid}")
 async def add_game(appid: str):
     try:
         key = get_api_key()
@@ -231,7 +231,7 @@ async def add_game(appid: str):
         log(f"Saved {appid}.lua")
         return Response(content="OK", status_code=200)
     except Exception as e:
-        log(f"/add/{appid} error: {e}")
+        log(f"/{appid} error: {e}")
         return Response(content=str(e), status_code=500)
 
 
