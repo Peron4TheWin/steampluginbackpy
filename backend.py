@@ -285,7 +285,7 @@ async def remove_game(appid: str):
 
 if __name__ == "__main__":
     # 1. Actualizar content.js antes de arrancar
-    #update_content_js()
+    update_content_js()
 
     # 2. Injector en background
     threading.Thread(target=injector_loop, daemon=True).start()
