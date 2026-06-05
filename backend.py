@@ -119,66 +119,101 @@ def load_content_js() -> str:
         return ""
 
 
-def inject(ws_url: str, url: str) -> bool:
+def send_and_wait(ws, msg_id: int, method: str, params: dict) -> dict:
+    """Manda un comando CDP y espera la respuesta con el id correcto, ignorando eventos."""
+    ws.send(json.dumps({"id": msg_id, "method": method, "params": params}))
+    while True:
+        raw = ws.recv()
+        data = json.loads(raw)
+        if data.get("id") == msg_id:
+            return data
+
+
+def watch_tab(ws_url: str, initial_url: str) -> None:
+    """
+    Mantiene una conexión WS abierta con el tab y escucha eventos de navegación.
+    Cuando detecta Page.frameNavigated hacia una store page, inyecta el script.
+    Corre en su propio thread por tab.
+    """
     try:
         source = load_content_js()
         if not source:
-            return False
+            return
 
-        ws = create_connection(ws_url, timeout=5)
+        ws = create_connection(ws_url, timeout=10)
+        ws.settimeout(5)
 
-        for msg_id, method, params in [
-            (1, "Page.enable",         {}),
-            (2, "Page.setBypassCSP",   {"enabled": True}),
-            (3, "Page.addScriptToEvaluateOnNewDocument", {"source": source}),
-            (4, "Runtime.evaluate",    {"expression": source}),
-        ]:
-            ws.send(json.dumps({"id": msg_id, "method": method, "params": params}))
-            ws.recv()
+        # Habilitamos eventos y bypasseamos CSP antes de que llegue cualquier navegación
+        send_and_wait(ws, 1, "Page.enable", {})
+        send_and_wait(ws, 2, "Page.setBypassCSP", {"enabled": True})
+        send_and_wait(ws, 3, "Page.addScriptToEvaluateOnNewDocument", {"source": source})
+
+        # Si la URL actual ya es una store page, inyectamos ahora
+        if "store.steampowered.com/app/" in initial_url:
+            send_and_wait(ws, 10, "Runtime.evaluate", {"expression": source})
+            log(f"Injected (current) into {initial_url}")
+
+        # Escuchamos eventos de navegación
+        while True:
+            try:
+                msg = ws.recv()
+                data = json.loads(msg)
+                method = data.get("method", "")
+
+                if method == "Page.frameNavigated":
+                    frame = data.get("params", {}).get("frame", {})
+                    if frame.get("parentId"):
+                        continue
+                    url = frame.get("url", "")
+                    if "store.steampowered.com/app/" not in url:
+                        continue
+                    log(f"frameNavigated -> {url}, inyectando...")
+                    ws.send(json.dumps({
+                        "id": 10,
+                        "method": "Runtime.evaluate",
+                        "params": {"expression": source}
+                    }))
+
+            except Exception:
+                break
 
         ws.close()
-        log(f"Injected into {url}")
-        return True
-
     except Exception as e:
-        log(f"Injection failed for {url}: {e}")
-        return False
+        log(f"watch_tab error ({ws_url}): {e}")
 
 
 def injector_loop() -> None:
     log("Injector loop started")
-    last_urls: dict[str, str] = {}
+    watched: set[str] = set()  # ws_urls que ya tienen un thread activo
 
     while True:
         try:
             tabs = requests.get(CEF_DEBUG_URL, timeout=2).json()
-            active_tabs: set[str] = set()
 
             for tab in tabs:
                 url    = tab.get("url", "")
                 ws_url = tab.get("webSocketDebuggerUrl")
-                if not ws_url:
+                if not ws_url or ws_url in watched:
                     continue
 
-                active_tabs.add(ws_url)
+                # Tab nuevo — arrancamos un watcher en background
+                watched.add(ws_url)
+                t = threading.Thread(
+                    target=watch_tab,
+                    args=(ws_url, url),
+                    daemon=True,
+                )
+                t.start()
+                log(f"Watching new tab: {url}")
 
-                if "store.steampowered.com/app/" not in url:
-                    continue
-
-                if last_urls.get(ws_url) == url:
-                    continue
-
-                log(f"URL changed: {last_urls.get(ws_url)} -> {url}")
-                if inject(ws_url, url):
-                    last_urls[ws_url] = url
-
-            # Limpiamos tabs cerradas
-            last_urls = {ws: u for ws, u in last_urls.items() if ws in active_tabs}
+            # Limpiamos tabs cerradas comparando con los ws_url activos
+            active = {t.get("webSocketDebuggerUrl") for t in tabs if t.get("webSocketDebuggerUrl")}
+            watched &= active
 
         except Exception as e:
             log(f"[injector] {e}")
 
-        time.sleep(1)
+        time.sleep(2)
 
 
 # ============================================================
@@ -259,7 +294,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="127.0.0.1",
-        port=27060,
+        port=3000,
         log_level=None,
         log_config=None,
     )
