@@ -193,9 +193,9 @@ def injector_loop() -> None:
             for tab in tabs:
                 url    = tab.get("url", "")
                 ws_url = tab.get("webSocketDebuggerUrl")
-                if not ws_url or ws_url in watched:
+                if not url or url in watched:
                     continue
-
+                watched.add(url)
                 # Tab nuevo — arrancamos un watcher en background
                 watched.add(ws_url)
                 t = threading.Thread(
@@ -285,7 +285,7 @@ async def remove_game(appid: str):
 
 if __name__ == "__main__":
     # 1. Actualizar content.js antes de arrancar
-    update_content_js()
+    #update_content_js()
 
     # 2. Injector en background
     threading.Thread(target=injector_loop, daemon=True).start()
