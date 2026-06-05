@@ -5,6 +5,7 @@ import pathlib
 import logging
 import threading
 import os
+import sys
 
 import requests
 import uvicorn
@@ -16,7 +17,10 @@ from websocket import create_connection
 # PATHS
 # ============================================================
 
-BASE_DIR   = pathlib.Path(__file__).parent
+if getattr(sys, "frozen", False):
+    BASE_DIR = pathlib.Path(sys.executable).parent
+else:
+    BASE_DIR = pathlib.Path(__file__).parent
 KEY_FILE   = BASE_DIR / "key.txt"
 PLUGIN_DIR = BASE_DIR / "config" / "stplug-in"
 LOG_FILE   = BASE_DIR / "backend.log"
