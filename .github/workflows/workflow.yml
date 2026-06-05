@@ -5,6 +5,9 @@ on:
     branches:
       - master
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -22,14 +25,13 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build with PyInstaller
-        run: |
-          pyinstaller --onefile --noconsole --name backend main.py
+        run: pyinstaller --onefile --noconsole --name backend main.py
 
-      - name: Create release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: build-${{ github.run_number }}
+          name: Build #${{ github.run_number }}
           body: ${{ github.event.head_commit.message }}
           make_latest: true
           files: dist/backend.exe
