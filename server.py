@@ -105,5 +105,15 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
         except OSError as e:
             return Response(content=f"Error: {e}", status_code=500)
 
+    @app.get("/limit")
+    async def get_limit():
+        r = requests.get(
+            "https://hubcapmanifest.com/api/v1/user/stats",
+            headers={"Authorization": f"Bearer {get_api_key(key_file)}"}
+        )
+        data = r.json()
+        return Response(content=f"{data['daily_usage']}/{data['daily_limit']}",status_code=200)
+
+
 
     return app
