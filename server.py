@@ -88,6 +88,27 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
             log(f"/{appid} error: {e}")
             return Response(content=str(e), status_code=500)
 
+    @app.post("/keyless/{appid}")
+    async def add_game(appid: str):
+        try:
+            key = get_api_key(key_file)
+            if not key:
+                return Response(content="No API key configured", status_code=401)
+            r = requests.get(
+                f"https://raw.githubusercontent.com/Peron4TheWin/Peronapi/refs/heads/luas/{appid}.lua",
+                timeout=30,
+            )
+            if r.status_code != 200:
+                return Response(content=r.text, status_code=r.status_code)
+            (plugin_dir / f"{appid}.lua").write_bytes(r.content)
+            log(f"Saved {appid}.lua")
+            go_offline()
+            go_online()
+            return Response(content="OK", status_code=200)
+        except Exception as e:
+            log(f"/{appid} error: {e}")
+            return Response(content=str(e), status_code=500)
+
     # ----------------------------------------------------------
     # POST /remove/{appid}  — elimina el .lua del juego
     # ----------------------------------------------------------
