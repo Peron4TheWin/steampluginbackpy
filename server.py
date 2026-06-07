@@ -91,9 +91,6 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
     @app.post("/keyless/{appid}")
     async def add_game(appid: str):
         try:
-            key = get_api_key(key_file)
-            if not key:
-                return Response(content="No API key configured", status_code=401)
             r = requests.get(
                 f"https://raw.githubusercontent.com/Peron4TheWin/Peronapi/refs/heads/luas/{appid}.lua",
                 timeout=30,
