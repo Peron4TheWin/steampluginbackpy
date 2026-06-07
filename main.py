@@ -18,7 +18,9 @@ if getattr(sys, "frozen", False):
     BASE_DIR = pathlib.Path(sys.executable).parent
 else:
     BASE_DIR = pathlib.Path(__file__).parent
-
+# This is for testing when using pycharm
+#BASE_DIR   = r"C:\Program Files (x86)\Steam"
+#BASE_DIR   = pathlib.Path(BASE_DIR)
 KEY_FILE   = BASE_DIR / "key.txt"
 PLUGIN_DIR = BASE_DIR / "config" / "stplug-in"
 LOG_FILE   = BASE_DIR / "backend.log"

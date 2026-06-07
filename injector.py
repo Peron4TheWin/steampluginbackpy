@@ -82,6 +82,31 @@ def watch_tab(ws_url: str, initial_url: str, js_file: pathlib.Path) -> None:
     except Exception as e:
         log(f"watch_tab error ({ws_url}): {e}")
 
+def _steam_client_call(method: str) -> bool:
+    """Busca SharedJSContext y ejecuta un método de SteamClient.User ahí."""
+    try:
+        tabs = requests.get(CEF_DEBUG_URL, timeout=2).json()
+        target = next((t for t in tabs if t.get("title") == "SharedJSContext"), None)
+        if not target:
+            log("WARN: SharedJSContext no encontrado")
+            return False
+
+        ws = create_connection(target["webSocketDebuggerUrl"], timeout=10)
+        result = send_and_wait(ws, 1, "Runtime.evaluate", {"expression": f"SteamClient.User.{method}()"})
+        ws.close()
+        log(f"{method} ejecutado: {result}")
+        return True
+    except Exception as e:
+        log(f"_steam_client_call error: {e}")
+        return False
+
+
+def go_offline() -> bool:
+    return _steam_client_call("GoOffline")
+
+
+def go_online() -> bool:
+    return _steam_client_call("GoOnline")
 
 def injector_loop(js_file: pathlib.Path) -> None:
     log("Injector loop started")

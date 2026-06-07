@@ -6,6 +6,8 @@ import requests
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from injector import go_online, go_offline
+
 log = logging.getLogger().info
 
 
@@ -79,6 +81,8 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
                 return Response(content=r.text, status_code=r.status_code)
             (plugin_dir / f"{appid}.lua").write_bytes(r.content)
             log(f"Saved {appid}.lua")
+            go_offline()
+            go_online()
             return Response(content="OK", status_code=200)
         except Exception as e:
             log(f"/{appid} error: {e}")
@@ -91,6 +95,8 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
     async def remove_game(appid: str):
         try:
             os.remove(plugin_dir / f"{appid}.lua")
+            go_offline()
+            go_online()
             return Response(content=f"{appid}.lua removed", status_code=200)
         except OSError as e:
             return Response(content=f"Error: {e}", status_code=500)
