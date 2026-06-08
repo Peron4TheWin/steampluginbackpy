@@ -28,8 +28,19 @@ def cdp_call(ws_url: str, method: str, params: dict) -> dict:
 
 def inject(ws_url: str, source: str) -> None:
     try:
-        cdp_call(ws_url, "Page.setBypassCSP", {"enabled": True})
-        cdp_call(ws_url, "Runtime.evaluate", {"expression": source})
+        ws = create_connection(ws_url, timeout=5)
+
+        def call(msg_id: int, method: str, params: dict) -> dict:
+            ws.send(json.dumps({"id": msg_id, "method": method, "params": params}))
+            while True:
+                data = json.loads(ws.recv())
+                if data.get("id") == msg_id:
+                    return data
+
+        call(1, "Page.enable", {})
+        call(2, "Page.setBypassCSP", {"enabled": True})
+        call(3, "Runtime.evaluate", {"expression": source})
+        ws.close()
         print("[INJECT] OK")
     except Exception as e:
         print(f"[INJECT] error: {e}")
