@@ -24,66 +24,41 @@ def cdp_call(ws_url: str, method: str, params: dict) -> dict:
             return data
 
 def watch_tab(ws_url: str, initial_url: str, js_file: pathlib.Path) -> None:
-    """Se suscribe a eventos de un tab y reinyecta en cada navegación."""
-    try:
-        ws = create_connection(ws_url, timeout=10)
-        msg_id = 1
+    ws = create_connection(ws_url, timeout=10)
+    msg_id = 1
 
-        def call(method: str, params: dict) -> dict:
-            nonlocal msg_id
-            ws.send(json.dumps({"id": msg_id, "method": method, "params": params}))
-            # Drainear hasta encontrar la respuesta, ignorando eventos
-            while True:
-                data = json.loads(ws.recv())
-                if data.get("id") == msg_id:
-                    msg_id += 1
-                    return data
-
-        def do_inject(url: str):
-            source = load_content_js(js_file)
-            if not source:
-                return
-            # setBypassCSP ANTES del evaluate
-            call("Page.setBypassCSP", {"enabled": True})
-            call("Runtime.evaluate", {"expression": source, "awaitPromise": False})
-            print(f"[INJECT] OK → {url}")
-
-        call("Page.enable", {})
-        call("Runtime.enable", {})
-
-        # Inyectar en la URL actual si ya es una store page
-        if "store.steampowered.com/app/" in initial_url:
-            do_inject(initial_url)
-
-        # Escuchar navegaciones futuras
+    def call(method, params):
+        nonlocal msg_id
+        mid = msg_id
+        msg_id += 1
+        ws.send(json.dumps({"id": mid, "method": method, "params": params}))
         while True:
-            try:
-                ws.settimeout(30)
-                raw = ws.recv()
-                event = json.loads(raw)
-                method = event.get("method", "")
+            data = json.loads(ws.recv())
+            if data.get("id") == mid:
+                return data
 
-                if method == "Page.domContentEventFired":
-                    # Obtener URL actual
-                    result = call("Runtime.evaluate", {
-                        "expression": "window.location.href",
-                        "returnByValue": True
-                    })
-                    current_url = result.get("result", {}).get("result", {}).get("value", "")
-                    if "store.steampowered.com/app/" in current_url:
-                        do_inject(current_url)
+    source = load_content_js(js_file)
 
-            except WebSocketTimeoutException:
-                # Chequear si el tab sigue vivo
-                continue
-            except Exception as e:
-                print(f"[WATCH] tab cerrado o error: {e}")
-                break
+    call("Page.enable", {})
+    # Bypassear CSP para navegaciones FUTURAS
+    call("Page.setBypassCSP", {"enabled": True})
+    # Inyectar en cada documento nuevo ANTES de que cargue
+    call("Page.addScriptToEvaluateOnNewDocument", {"source": source})
 
-        ws.close()
-    except Exception as e:
-        print(f"[WATCH] error conectando a {ws_url}: {e}")
+    # Para la página actual que ya cargó, forzar reload
+    if "store.steampowered.com/app/" in initial_url:
+        print(f"[INJECT] recargando para aplicar bypass: {initial_url}")
+        call("Page.reload", {})
 
+    # Escuchar navegaciones
+    while True:
+        raw = ws.recv()
+        event = json.loads(raw)
+        if event.get("method") == "Page.frameNavigated":
+            frame = event["params"]["frame"]
+            if frame.get("parentId") is None:  # solo main frame
+                url = frame.get("url", "")
+                print(f"[WATCH] navegó a: {url}")
 
 def injector_loop(js_file: pathlib.Path) -> None:
     print("[INJECTOR] loop started")
