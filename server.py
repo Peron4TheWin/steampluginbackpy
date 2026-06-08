@@ -131,13 +131,16 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
 
     @app.get("/limit")
     async def get_limit():
-        r = requests.get(
-            "https://hubcapmanifest.com/api/v1/user/stats",
-            headers={"Authorization": f"Bearer {get_api_key(key_file)}"}
-        )
-        data = r.json()
-        return Response(content=f"{data['daily_usage']}/{data['daily_limit']}",status_code=200)
-
+        try:
+            r = requests.get(
+                "https://hubcapmanifest.com/api/v1/user/stats",
+                headers={"Authorization": f"Bearer {get_api_key(key_file)}"},
+                timeout=15,
+            )
+            data = r.json()
+            return Response(content=f"{data['daily_usage']}/{data['daily_limit']}", status_code=200)
+        except Exception as e:
+            return Response(content=str(e), status_code=500)
 
 
     return app
