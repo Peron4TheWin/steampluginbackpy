@@ -30,68 +30,35 @@ def send_and_wait(ws, msg_id: int, method: str, params: dict) -> dict:
             return data
 
 
-def watch_tab(ws_url: str, initial_url: str, js_file: pathlib.Path) -> None:
-    """
-    Mantiene una conexión WS abierta con el tab y escucha eventos de navegación.
-    Cuando detecta Page.frameNavigated hacia una store page, inyecta el script.
-    Corre en su propio thread por tab.
-    """
-    try:
-        source = load_content_js(js_file)
-        if not source:
-            return
-
-        ws = create_connection(ws_url, timeout=10)
-        ws.settimeout(5)
-
-        # Habilitamos eventos y bypasseamos CSP antes de que llegue cualquier navegación
-        send_and_wait(ws, 1, "Page.enable", {})
-        send_and_wait(ws, 2, "Page.setBypassCSP", {"enabled": True})
-        send_and_wait(ws, 3, "Page.addScriptToEvaluateOnNewDocument", {"source": source})
-
-        # Si la URL actual ya es una store page, inyectamos ahora
-        if "store.steampowered.com/app/" in initial_url:
-            send_and_wait(ws, 10, "Runtime.evaluate", {"expression": source})
-            log(f"Injected (current) into {initial_url}")
-
-        # Escuchamos eventos de navegación
-        while True:
-            try:
-                msg = ws.recv()
-                data = json.loads(msg)
-                method = data.get("method", "")
-
-                if method == "Page.frameNavigated":
-                    frame = data.get("params", {}).get("frame", {})
-                    if frame.get("parentId"):
-                        continue
-                    url = frame.get("url", "")
-                    if "store.steampowered.com/app/" not in url:
-                        continue
-                    log(f"frameNavigated -> {url}, inyectando...")
-                    ws.send(json.dumps({
-                        "id": 10,
-                        "method": "Runtime.evaluate",
-                        "params": {"expression": source}
-                    }))
-
-            except Exception:
-                break
-
-        ws.close()
-    except Exception as e:
-        log(f"watch_tab error ({ws_url}): {e}")
-
-def _steam_client_call(method: str) -> bool:
-    """Busca SharedJSContext y ejecuta un método de SteamClient.User ahí."""
+def _get_shared_ws_url() -> str | None:
+    """Obtiene el webSocketDebuggerUrl del SharedJSContext."""
     try:
         tabs = requests.get(CEF_DEBUG_URL, timeout=2).json()
         target = next((t for t in tabs if t.get("title") == "SharedJSContext"), None)
-        if not target:
+        return target["webSocketDebuggerUrl"] if target else None
+    except Exception:
+        return None
+
+
+def _get_store_ws_url() -> str | None:
+    """Obtiene el webSocketDebuggerUrl de la pagina de la store."""
+    try:
+        tabs = requests.get(CEF_DEBUG_URL, timeout=2).json()
+        target = next((t for t in tabs if "store.steampowered.com" in t.get("url", "")), None)
+        return target["webSocketDebuggerUrl"] if target else None
+    except Exception:
+        return None
+
+
+def _steam_client_call(method: str) -> bool:
+    """Busca SharedJSContext y ejecuta un metodo de SteamClient.User ahi."""
+    try:
+        ws_url = _get_shared_ws_url()
+        if not ws_url:
             log("WARN: SharedJSContext no encontrado")
             return False
 
-        ws = create_connection(target["webSocketDebuggerUrl"], timeout=10)
+        ws = create_connection(ws_url, timeout=10)
         result = send_and_wait(ws, 1, "Runtime.evaluate", {"expression": f"SteamClient.User.{method}()"})
         ws.close()
         log(f"{method} ejecutado: {result}")
@@ -108,35 +75,140 @@ def go_offline() -> bool:
 def go_online() -> bool:
     return _steam_client_call("GoOnline")
 
+
+def _inject_csp_and_script(store_ws_url: str, source: str) -> None:
+    """Conecta a la store page y configura bypass CSP + script on new document."""
+    try:
+        ws = create_connection(store_ws_url, timeout=10)
+        ws.settimeout(5)
+        send_and_wait(ws, 1, "Page.enable", {})
+        send_and_wait(ws, 2, "Page.setBypassCSP", {"enabled": True})
+        send_and_wait(ws, 3, "Page.addScriptToEvaluateOnNewDocument", {"source": source})
+        ws.close()
+        log(f"CSP bypass + addScript configurado en store")
+    except Exception as e:
+        log(f"_inject_csp_and_script error: {e}")
+
+
+def _inject_js(store_ws_url: str, source: str) -> None:
+    """Conecta a la store page y ejecuta el script."""
+    try:
+        ws = create_connection(store_ws_url, timeout=10)
+        ws.settimeout(5)
+        r = send_and_wait(ws, 1, "Runtime.evaluate", {"expression": source})
+        ws.close()
+        log(f"JS inyectado en store: {r.get('result', {}).get('result', {})}")
+    except Exception as e:
+        log(f"_inject_js error: {e}")
+
+
 def injector_loop(js_file: pathlib.Path) -> None:
-    log("Injector loop started")
-    watched: set[str] = set()  # ws_urls que ya tienen un thread activo
+    log("Injector event-driven loop started")
+
+    source = load_content_js(js_file)
+    if not source:
+        log("WARN: content.js vacio, injector detenido")
+        return
+
+    # Estado: mantener bypass CSP activo en la store SIEMPRE
+    # El bypass se configura antes de cualquier navegacion para que
+    # cuando la pagina cargue, el CSP ya este desactivado.
+    store_ws: str | None = None
+    store_ws_lock = threading.Lock()
+
+    def _ensure_csp_bypass() -> None:
+        """Configura CSP bypass en la store page si no esta hecho ya."""
+        nonlocal store_ws
+        new_ws = _get_store_ws_url()
+        if not new_ws:
+            return
+        with store_ws_lock:
+            if store_ws == new_ws:
+                return
+            store_ws = new_ws
+        log(f"Store target encontrado: {store_ws}")
+        _inject_csp_and_script(store_ws, source)
+
+    # Primera configuracion de CSP bypass
+    _ensure_csp_bypass()
 
     while True:
+        shared_ws_url = _get_shared_ws_url()
+        if not shared_ws_url:
+            log("WARN: SharedJSContext no encontrado, reintentando en 2s...")
+            time.sleep(2)
+            continue
+
         try:
-            tabs = requests.get(CEF_DEBUG_URL, timeout=2).json()
+            ws = create_connection(shared_ws_url, timeout=10)
+            ws.settimeout(30)
+            log(f"Conectado a SharedJSContext: {shared_ws_url}")
 
-            for tab in tabs:
-                url    = tab.get("url", "")
-                ws_url = tab.get("webSocketDebuggerUrl")
-                if not url or url in watched:
-                    continue
-                watched.add(url)
-                # Tab nuevo — arrancamos un watcher en background
-                watched.add(ws_url)
-                t = threading.Thread(
-                    target=watch_tab,
-                    args=(ws_url, url, js_file),
-                    daemon=True,
-                )
-                t.start()
-                log(f"Watching new tab: {url}")
+            send_and_wait(ws, 1, "Runtime.enable", {})
 
-            # Limpiamos tabs cerradas comparando con los ws_url activos
-            active = {t.get("webSocketDebuggerUrl") for t in tabs if t.get("webSocketDebuggerUrl")}
-            watched &= active
+            # Runtime.addBinding crea un callback nativo que dispara Runtime.bindingCalled
+            send_and_wait(ws, 2, "Runtime.addBinding", {"name": "steamNavigationEvent"})
+
+            # Inyectar event listeners que llaman al binding
+            setup_code = """
+(function() {
+    if (window.__steamNavEventsInstalled) return 'already installed';
+    window.__steamNavEventsInstalled = true;
+
+    MainWindowBrowserManager.m_browser.on('finished-request', function() {
+        var url = MainWindowBrowserManager.m_URL;
+        if (url && url.includes('store.steampowered.com/app/')) {
+            steamNavigationEvent(JSON.stringify({event: 'finished-request', url: url}));
+        }
+    });
+
+    // Inyectar tambien ahora si ya estamos en una store
+    var currentUrl = MainWindowBrowserManager.m_URL;
+    if (currentUrl && currentUrl.includes('store.steampowered.com/app/')) {
+        steamNavigationEvent(JSON.stringify({event: 'finished-request', url: currentUrl}));
+    }
+
+    return 'event-driven listeners installed';
+})()
+"""
+            r = send_and_wait(ws, 3, "Runtime.evaluate", {"expression": setup_code})
+            log(f"Listeners: {r.get('result', {}).get('result', {}).get('value', 'N/A')}")
+
+            # Bucle principal: escuchar Runtime.bindingCalled
+            while True:
+                raw = ws.recv()
+                data = json.loads(raw)
+
+                if data.get("method") == "Runtime.bindingCalled":
+                    name = data.get("params", {}).get("name", "")
+                    payload = data.get("params", {}).get("payload", "")
+                    if name == "steamNavigationEvent":
+                        try:
+                            evt = json.loads(payload)
+                            evt_type = evt.get("event", "")
+                            evt_url = evt.get("url", "")
+                            log(f"Binding recibido: {evt_type} -> {evt_url}")
+
+                            if evt_type == "finished-request":
+                                # Asegurar que CSP bypass sigue activo (por si el target cambio)
+                                _ensure_csp_bypass()
+                                with store_ws_lock:
+                                    current_store = store_ws
+                                if current_store:
+                                    threading.Thread(
+                                        target=_inject_js,
+                                        args=(current_store, source),
+                                        daemon=True,
+                                    ).start()
+
+                        except json.JSONDecodeError:
+                            log(f"Binding payload invalido: {payload}")
 
         except Exception as e:
-            log(f"[injector] {e}")
+            log(f"SharedJSContext connection error: {e}")
+            try:
+                ws.close()
+            except Exception:
+                pass
 
         time.sleep(2)
