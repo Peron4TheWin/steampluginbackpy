@@ -78,15 +78,17 @@ def go_online() -> bool:
 
 
 def _inject_csp_and_script(store_ws_url: str, source: str) -> None:
-    """Conecta a la store page y configura bypass CSP + script on new document."""
+    """Conecta a la store page: bypass CSP, addScript para futuros docs, y evalua en el doc actual."""
     try:
         ws = create_connection(store_ws_url, timeout=10)
         ws.settimeout(5)
         send_and_wait(ws, 1, "Page.enable", {})
         send_and_wait(ws, 2, "Page.setBypassCSP", {"enabled": True})
         send_and_wait(ws, 3, "Page.addScriptToEvaluateOnNewDocument", {"source": source})
+        # Inyectar tambien en la pagina actual (ya cargada)
+        r = send_and_wait(ws, 4, "Runtime.evaluate", {"expression": source})
         ws.close()
-        log(f"CSP bypass + addScript configurado en store")
+        log(f"CSP bypass + addScript + inyeccion inicial en store: {r.get('result', {}).get('result', {})}")
     except Exception as e:
         log(f"_inject_csp_and_script error: {e}")
 
@@ -189,15 +191,6 @@ def injector_loop(js_file: pathlib.Path) -> None:
                 elif val is True:
                     log("Listeners: instalados correctamente")
                     listeners_installed = True
-                    # Inyectar JS ahora porque el binding inicial
-                    # se lo comio send_and_wait durante la espera de ID 3
-                    with store_ws_lock:
-                        current_store = store_ws
-                    if current_store:
-                        threading.Thread(
-                            target=_inject_js, args=(current_store, source),
-                            daemon=True,
-                        ).start()
                 else:
                     log(f"Listeners: {val}")
 
