@@ -1,4 +1,5 @@
 import json
+import socket
 import time
 import logging
 import pathlib
@@ -110,14 +111,10 @@ def injector_loop(js_file: pathlib.Path) -> None:
         log("WARN: content.js vacio, injector detenido")
         return
 
-    # Estado: mantener bypass CSP activo en la store SIEMPRE
-    # El bypass se configura antes de cualquier navegacion para que
-    # cuando la pagina cargue, el CSP ya este desactivado.
     store_ws: str | None = None
     store_ws_lock = threading.Lock()
 
     def _ensure_csp_bypass() -> None:
-        """Configura CSP bypass en la store page si no esta hecho ya."""
         nonlocal store_ws
         new_ws = _get_store_ws_url()
         if not new_ws:
@@ -129,8 +126,14 @@ def injector_loop(js_file: pathlib.Path) -> None:
         log(f"Store target encontrado: {store_ws}")
         _inject_csp_and_script(store_ws, source)
 
-    # Primera configuracion de CSP bypass
+    # Bloquear hasta que la store este disponible, luego configurar CSP bypass
+    while _get_store_ws_url() is None:
+        log("WARN: Store page no encontrada, reintentando en 2s...")
+        time.sleep(2)
     _ensure_csp_bypass()
+
+    # Flag en Python para evitar reinstalar listeners cada vez que se reconecta
+    listeners_installed = False
 
     while True:
         shared_ws_url = _get_shared_ws_url()
@@ -141,42 +144,68 @@ def injector_loop(js_file: pathlib.Path) -> None:
 
         try:
             ws = create_connection(shared_ws_url, timeout=10)
-            ws.settimeout(30)
+            ws.settimeout(5)
             log(f"Conectado a SharedJSContext: {shared_ws_url}")
 
             send_and_wait(ws, 1, "Runtime.enable", {})
-
-            # Runtime.addBinding crea un callback nativo que dispara Runtime.bindingCalled
             send_and_wait(ws, 2, "Runtime.addBinding", {"name": "steamNavigationEvent"})
 
-            # Inyectar event listeners que llaman al binding
-            setup_code = """
+            if not listeners_installed:
+                # Limpiar flag viejo que pueda quedar en el contexto JS
+                send_and_wait(ws, 10, "Runtime.evaluate", {
+                    "expression": "delete window.__steamNavEventsInstalled; 'cleaned'"
+                })
+
+                setup_code = """
 (function() {
     if (window.__steamNavEventsInstalled) return 'already installed';
-    window.__steamNavEventsInstalled = true;
+    try {
+        var MBM = window.MainWindowBrowserManager || MainWindowBrowserManager;
+        if (!MBM || !MBM.m_browser) throw new Error('MainWindowBrowserManager not accessible');
 
-    MainWindowBrowserManager.m_browser.on('finished-request', function() {
-        var url = MainWindowBrowserManager.m_URL;
-        if (url && url.includes('store.steampowered.com/app/')) {
-            steamNavigationEvent(JSON.stringify({event: 'finished-request', url: url}));
+        window.__steamNavEventsInstalled = true;
+        MBM.m_browser.on('finished-request', function() {
+            var url = MBM.m_URL;
+            if (url && url.includes('store.steampowered.com/app/')) {
+                steamNavigationEvent(JSON.stringify({event: 'finished-request', url: url}));
+            }
+        });
+        var currentUrl = MBM.m_URL;
+        if (currentUrl && currentUrl.includes('store.steampowered.com/app/')) {
+            steamNavigationEvent(JSON.stringify({event: 'finished-request', url: currentUrl}));
         }
-    });
-
-    // Inyectar tambien ahora si ya estamos en una store
-    var currentUrl = MainWindowBrowserManager.m_URL;
-    if (currentUrl && currentUrl.includes('store.steampowered.com/app/')) {
-        steamNavigationEvent(JSON.stringify({event: 'finished-request', url: currentUrl}));
+        return true;
+    } catch(e) {
+        return 'ERROR: ' + e.toString();
     }
-
-    return 'event-driven listeners installed';
 })()
 """
-            r = send_and_wait(ws, 3, "Runtime.evaluate", {"expression": setup_code})
-            log(f"Listeners: {r.get('result', {}).get('result', {}).get('value', 'N/A')}")
+                r = send_and_wait(ws, 3, "Runtime.evaluate", {"expression": setup_code})
+                val = r.get('result', {}).get('result', {}).get('value', None)
+                if isinstance(val, str) and val.startswith('ERROR'):
+                    log(f"Listeners: {val}")
+                elif val is True:
+                    log("Listeners: instalados correctamente")
+                    listeners_installed = True
+                    # Inyectar JS ahora porque el binding inicial
+                    # se lo comio send_and_wait durante la espera de ID 3
+                    with store_ws_lock:
+                        current_store = store_ws
+                    if current_store:
+                        threading.Thread(
+                            target=_inject_js, args=(current_store, source),
+                            daemon=True,
+                        ).start()
+                else:
+                    log(f"Listeners: {val}")
 
-            # Bucle principal: escuchar Runtime.bindingCalled
+            # Bucle de eventos
             while True:
-                raw = ws.recv()
+                try:
+                    raw = ws.recv()
+                except socket.timeout:
+                    continue
+
                 data = json.loads(raw)
 
                 if data.get("method") == "Runtime.bindingCalled":
@@ -188,19 +217,15 @@ def injector_loop(js_file: pathlib.Path) -> None:
                             evt_type = evt.get("event", "")
                             evt_url = evt.get("url", "")
                             log(f"Binding recibido: {evt_type} -> {evt_url}")
-
                             if evt_type == "finished-request":
-                                # Asegurar que CSP bypass sigue activo (por si el target cambio)
                                 _ensure_csp_bypass()
                                 with store_ws_lock:
                                     current_store = store_ws
                                 if current_store:
                                     threading.Thread(
-                                        target=_inject_js,
-                                        args=(current_store, source),
+                                        target=_inject_js, args=(current_store, source),
                                         daemon=True,
                                     ).start()
-
                         except json.JSONDecodeError:
                             log(f"Binding payload invalido: {payload}")
 
