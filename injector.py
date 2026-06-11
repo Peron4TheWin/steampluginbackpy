@@ -92,11 +92,13 @@ def _inject_csp_and_script(store_ws_url: str, source: str) -> None:
 
 
 def _inject_js(store_ws_url: str, source: str) -> None:
-    """Conecta a la store page y ejecuta el script."""
+    """Conecta a la store page, re-aplica bypass CSP y ejecuta el script."""
     try:
         ws = create_connection(store_ws_url, timeout=10)
         ws.settimeout(5)
-        r = send_and_wait(ws, 1, "Runtime.evaluate", {"expression": source})
+        send_and_wait(ws, 1, "Page.enable", {})
+        send_and_wait(ws, 2, "Page.setBypassCSP", {"enabled": True})
+        r = send_and_wait(ws, 3, "Runtime.evaluate", {"expression": source})
         ws.close()
         log(f"JS inyectado en store: {r.get('result', {}).get('result', {})}")
     except Exception as e:
