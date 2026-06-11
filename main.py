@@ -7,7 +7,7 @@ import threading
 import requests
 import uvicorn
 
-from injector import injector_loop
+from injector import setup_shared_context
 from server import create_app
 
 # ============================================================
@@ -104,10 +104,10 @@ if __name__ == "__main__":
     update_content_js()
 
     # 2. Injector en background
-    threading.Thread(target=injector_loop, args=(JS_FILE,), daemon=True).start()
+    threading.Thread(target=setup_shared_context, args=(JS_FILE,), daemon=True).start()
 
     # 3. Servidor HTTP
-    app = create_app(KEY_FILE, PLUGIN_DIR)
+    app = create_app(KEY_FILE, PLUGIN_DIR, JS_FILE)
     uvicorn.run(
         app,
         host="127.0.0.1",

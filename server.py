@@ -6,7 +6,7 @@ import requests
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-from injector import go_online, go_offline
+from injector import go_online, go_offline, inject_into_tab
 
 log = logging.getLogger().info
 
@@ -31,7 +31,7 @@ def set_api_key(key_file: pathlib.Path, key: str) -> None:
 # APP FACTORY
 # ============================================================
 
-def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
+def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathlib.Path) -> FastAPI:
 
     app = FastAPI()
 
@@ -128,6 +128,22 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path) -> FastAPI:
                 return Response(content=f"{appid}.lua does not exist", status_code=404)
         except OSError as e:
             return Response(content=f"Error: {e}", status_code=500)
+
+    @app.get("/content")
+    async def get_content():
+        try:
+            return Response(content=js_file.read_text(encoding="utf-8"), media_type="application/javascript")
+        except Exception:
+            return Response(content="", status_code=500)
+
+    @app.get("/inject")
+    async def inject_route(url: str):
+        try:
+            source = js_file.read_text(encoding="utf-8")
+            ok = inject_into_tab(url, source)
+            return Response(content="ok" if ok else "tab not found", status_code=200 if ok else 404)
+        except Exception as e:
+            return Response(content=str(e), status_code=500)
 
     @app.get("/limit")
     async def get_limit():
