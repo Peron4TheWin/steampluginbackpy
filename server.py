@@ -10,6 +10,14 @@ from injector import go_online, go_offline, inject_into_tab
 
 log = logging.getLogger().info
 
+import re
+
+def filter_setmanifestid(content: bytes) -> bytes:
+    """Comenta lineas setManifestid para que Steam siempre baje la ultima version."""
+    text = content.decode("utf-8", errors="replace")
+    filtered = re.sub(r"^(setManifestid)", r"-- \1", text, flags=re.MULTILINE)
+    return filtered.encode("utf-8")
+
 
 # ============================================================
 # KEY HELPERS
@@ -79,7 +87,7 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
             )
             if r.status_code != 200:
                 return Response(content=r.text, status_code=r.status_code)
-            (plugin_dir / f"{appid}.lua").write_bytes(r.content)
+            (plugin_dir / f"{appid}.lua").write_bytes(filter_setmanifestid(r.content))
             log(f"Saved {appid}.lua")
             go_offline()
             go_online()
@@ -97,7 +105,7 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
             )
             if r.status_code != 200:
                 return Response(content=r.text, status_code=r.status_code)
-            (plugin_dir / f"{appid}.lua").write_bytes(r.content)
+            (plugin_dir / f"{appid}.lua").write_bytes(filter_setmanifestid(r.content))
             log(f"Saved {appid}.lua")
             go_offline()
             go_online()
