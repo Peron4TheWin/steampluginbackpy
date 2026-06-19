@@ -67,11 +67,6 @@ def setup_shared_context(js_file: pathlib.Path) -> None:
             log("SharedJSContext monitor injected")
 
             source = js_file.read_text(encoding="utf-8")
-            # Also inject peron.js if available
-            peron_file = js_file.parent / "peron.js"
-            peron_source = peron_file.read_text(encoding="utf-8") if peron_file.is_file() else ""
-            full_source = source + "\n" + peron_source
-
             for tab in tabs:
                 tab_url = tab.get("url", "")
                 if "store.steampowered.com/app/" not in tab_url:
@@ -79,7 +74,7 @@ def setup_shared_context(js_file: pathlib.Path) -> None:
                 try:
                     tws = create_connection(tab["webSocketDebuggerUrl"], timeout=10)
                     tws.settimeout(5)
-                    send_and_wait(tws, 1, "Runtime.evaluate", {"expression": full_source})
+                    send_and_wait(tws, 1, "Runtime.evaluate", {"expression": source})
                     tws.close()
                     log(f"Injected into existing tab: {tab_url}")
                 except Exception:
