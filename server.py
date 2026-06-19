@@ -1,6 +1,8 @@
 import os
 import logging
 import pathlib
+import subprocess
+import json
 
 import requests
 from fastapi import FastAPI, Request, Response
@@ -155,6 +157,9 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
     async def inject_route(url: str):
         try:
             source = js_file.read_text(encoding="utf-8")
+            peron_file = js_file.parent / "peron.js"
+            if peron_file.is_file():
+                source += "\n" + peron_file.read_text(encoding="utf-8")
             ok = inject_into_tab(url, source)
             return Response(content="ok" if ok else "tab not found", status_code=200 if ok else 404)
         except Exception as e:
@@ -173,7 +178,7 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
     @app.get("/denuvo/{appid}")
     async def get_denuvo(appid: str):
         import subprocess, re, pathlib, json as _json
-        exe = pathlib.Path("C:/Users/Administrator/Downloads/steamshit/OpenSteamTool/extract_tickets.exe")
+        exe = js_file.parent / "extract_tickets.exe"
         if not exe.exists():
             return Response(content='{"error":"extract_tickets.exe not found"}', status_code=500, media_type="application/json")
         try:
@@ -265,5 +270,28 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
         except Exception as e:
             return Response(content=str(e), status_code=500)
 
+
+    @app.get("/tickets/{appid}")
+    async def get_tickets(appid: str):
+        try:
+            exe = js_file.parent / "extract_tickets.exe"
+            if not exe.is_file():
+                return Response(content=json.dumps({"error": "extract_tickets.exe not found"}), status_code=500, media_type="application/json")
+            proc = subprocess.run([str(exe), appid], capture_output=True, timeout=30, input="\n", text=True)
+            tf = pathlib.Path(appid) / "tickets.txt"
+            if not tf.is_file():
+                return Response(content=json.dumps({"error": "no tickets, start the game download first"}), status_code=404, media_type="application/json")
+            import re
+            t = tf.read_text()
+            at = re.search(r"appticket\(\d+bytes\):([0-9a-fA-F]+)", t)
+            et = re.search(r"eticket\(\d+bytes\):([0-9a-fA-F]+)", t)
+            ah = at.group(1) if at else None
+            eh = et.group(1) if et else None
+            sid = None
+            if ah and len(ah) >= 32:
+                sid = str(int.from_bytes(bytes.fromhex(ah)[8:16], "little"))
+            return Response(content=json.dumps({"appticket": ah, "eticket": eh, "steam_id": sid}), media_type="application/json")
+        except Exception as e:
+            return Response(content=json.dumps({"error": str(e)}), status_code=500, media_type="application/json")
 
     return app
