@@ -1,0 +1,8 @@
+__pycache__/
+.idea/
+backend.log
+key.txt
+content.js
+content_properties.js
+config/
+denuvo_server/

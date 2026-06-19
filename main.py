@@ -58,6 +58,11 @@ CONTENT_JS_URL = (
     "/refs/heads/master/content/content.js"
 )
 
+CONTENT_PROPERTIES_JS_URL = (
+    "https://raw.githubusercontent.com/Peron4TheWin/steampluginfront"
+    "/refs/heads/master/content/content_properties.js"
+)
+
 
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -70,29 +75,30 @@ def _sha256_file(path: pathlib.Path) -> str:
         return ""
 
 
-def update_content_js() -> None:
-    log("Chequeando content.js...")
+def _download_js(url: str, dest: pathlib.Path, name: str) -> None:
+    log(f"Chequeando {name}...")
     try:
-        r = requests.get(
-            CONTENT_JS_URL,
-            timeout=15,
-            headers={"User-Agent": "steampluginback/1.0"},
-        )
+        r = requests.get(url, timeout=15, headers={"User-Agent": "steampluginback/1.0"})
         r.raise_for_status()
         remote = r.content
     except Exception as e:
-        log(f"WARN: no se pudo descargar content.js: {e}")
+        log(f"WARN: no se pudo descargar {name}: {e}")
         return
 
     remote_hash = _sha256_bytes(remote)
-    local_hash  = _sha256_file(JS_FILE)
-    log(f"content.js local={local_hash[:12]}... remote={remote_hash[:12]}...")
+    local_hash  = _sha256_file(dest)
+    log(f"{name} local={local_hash[:12]}... remote={remote_hash[:12]}...")
 
     if local_hash == remote_hash:
-        log("content.js ya esta actualizado")
+        log(f"{name} ya esta actualizado")
     else:
-        JS_FILE.write_bytes(remote)
-        log(f"content.js actualizado ({len(remote)} bytes)")
+        dest.write_bytes(remote)
+        log(f"{name} actualizado ({len(remote)} bytes)")
+
+
+def update_content_js() -> None:
+    _download_js(CONTENT_JS_URL, JS_FILE, "content.js")
+    _download_js(CONTENT_PROPERTIES_JS_URL, JS_FILE.parent / "content_properties.js", "content_properties.js")
 
 
 # ============================================================

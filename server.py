@@ -144,6 +144,13 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
         except Exception:
             return Response(content="", status_code=500)
 
+    @app.get("/content_properties.js")
+    async def get_content_properties():
+        try:
+            return Response(content=(js_file.parent / "content_properties.js").read_text(encoding="utf-8"), media_type="application/javascript")
+        except Exception:
+            return Response(content="", status_code=500)
+
     @app.get("/inject")
     async def inject_route(url: str):
         try:
@@ -151,6 +158,98 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
             ok = inject_into_tab(url, source)
             return Response(content="ok" if ok else "tab not found", status_code=200 if ok else 404)
         except Exception as e:
+            return Response(content=str(e), status_code=500)
+
+    @app.get("/fixes/{appid}")
+    async def get_fixes(appid: str):
+        return Response(content='[{"id":"fps_unlock","name":"FPS Unlock"},{"id":"skip_intro","name":"Skip Intro"},{"id":"fov_mod","name":"FOV Mod"}]', media_type="application/json")
+
+    @app.post("/fixes/{appid}/apply")
+    async def apply_fix(appid: str, request: Request):
+        body = await request.json()
+        log(f"Apply fix {body.get('fix')} for {appid}")
+        return Response(content="OK", status_code=200)
+
+    @app.get("/denuvo/{appid}")
+    async def get_denuvo(appid: str):
+        import subprocess, re, pathlib, json as _json
+        exe = pathlib.Path("C:/Users/Administrator/Downloads/steamshit/OpenSteamTool/extract_tickets.exe")
+        if not exe.exists():
+            return Response(content='{"error":"extract_tickets.exe not found"}', status_code=500, media_type="application/json")
+        try:
+            proc = subprocess.run([str(exe), appid], input="\n", capture_output=True, text=True, timeout=30, cwd=str(exe.parent))
+            txt_dir = exe.parent / appid / "tickets.txt"
+            if not txt_dir.exists():
+                return Response(content='{"error":"no output"}', status_code=500, media_type="application/json")
+            raw = txt_dir.read_text()
+            appticket = ""
+            eticket = ""
+            m = re.search(r"appticket\(\d+bytes\):\s*(\S+)", raw)
+            if m: appticket = m.group(1)
+            m = re.search(r"eticket\(\d+bytes\):\s*(\S+)", raw)
+            if m: eticket = m.group(1)
+
+            # POST to remote server to get one-time code
+            try:
+                r = requests.post(
+                    "http://api.perondepot.xyz/denuvo/api/ticket",
+                    json={"appid": appid, "appticket": appticket, "eticket": eticket},
+                    timeout=10,
+                    headers={"Host": "api.perondepot.xyz"},
+                )
+                if r.status_code == 200:
+                    code = r.json().get("code", "")
+                    return Response(content=_json.dumps({"code": code}), media_type="application/json")
+                else:
+                    return Response(content=_json.dumps({"error": f"Remote server: {r.status_code} {r.text}"}), status_code=500, media_type="application/json")
+            except Exception as e:
+                return Response(content=_json.dumps({"error": f"Remote server unreachable: {e}"}), status_code=500, media_type="application/json")
+
+        except Exception as e:
+            return Response(content='{"error":"' + str(e) + '"}', status_code=500, media_type="application/json")
+
+    @app.post("/denuvo/{appid}")
+    async def apply_denuvo(appid: str, request: Request):
+        import winreg
+        body = await request.json()
+        code = body.get("code", "").strip().upper()
+        if not code:
+            return Response(content="No code provided", status_code=400)
+
+        # Redeem code from remote server
+        try:
+            r = requests.get(
+                f"http://api.perondepot.xyz/denuvo/api/ticket/{code}",
+                timeout=10,
+                headers={"Host": "api.perondepot.xyz"},
+            )
+            if r.status_code != 200:
+                log(f"Apply denuvo: remote returned {r.status_code} {r.text}")
+                return Response(content=f"Remote error: {r.status_code} {r.text}", status_code=500)
+            data = r.json()
+            appticket = data.get("appticket", "")
+            eticket = data.get("eticket", "")
+            log(f"Apply denuvo for {appid}: redeemed code {code}, AppTicket={len(appticket)}bytes ETicket={len(eticket)}bytes")
+        except Exception as e:
+            log(f"Apply denuvo: remote fetch error {e}")
+            return Response(content=f"Remote unreachable: {e}", status_code=500)
+
+        # Store tickets in registry for OpenSteamTool
+        try:
+            key_path = f"Software\\Valve\\Steam\\Apps\\{appid}"
+            if appticket:
+                key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
+                winreg.SetValueEx(key, "AppTicket", 0, winreg.REG_BINARY, bytes.fromhex(appticket))
+                winreg.CloseKey(key)
+                log(f"AppTicket stored in HKCU\\{key_path}")
+            if eticket:
+                key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
+                winreg.SetValueEx(key, "ETicket", 0, winreg.REG_BINARY, bytes.fromhex(eticket))
+                winreg.CloseKey(key)
+                log(f"ETicket stored in HKCU\\{key_path}")
+            return Response(content="OK", status_code=200)
+        except Exception as e:
+            log(f"Apply denuvo: registry error {e}")
             return Response(content=str(e), status_code=500)
 
     @app.get("/limit")
