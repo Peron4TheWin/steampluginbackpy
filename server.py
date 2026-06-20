@@ -172,6 +172,7 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
 
     @app.get("/denuvo/{appid}")
     async def get_denuvo(appid: str):
+        import subprocess,json
         exe = js_file.parent / "extract_tickets.exe"
         if not exe.exists():
             return Response(content='{"error":"extract_tickets.exe not found"}', status_code=500, media_type="application/json")
