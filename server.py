@@ -172,22 +172,15 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
 
     @app.get("/denuvo/{appid}")
     async def get_denuvo(appid: str):
-        import subprocess, re, pathlib, json as _json
         exe = js_file.parent / "extract_tickets.exe"
         if not exe.exists():
             return Response(content='{"error":"extract_tickets.exe not found"}', status_code=500, media_type="application/json")
         try:
-            proc = subprocess.run([str(exe), appid], input="\n", capture_output=True, text=True, timeout=30, cwd=str(exe.parent))
-            txt_dir = exe.parent / appid / "tickets.txt"
-            if not txt_dir.exists():
+            proc = subprocess.run([str(exe), "--pipe", appid], capture_output=True, text=True, timeout=30)
+            parts = proc.stdout.strip().split("|")
+            if len(parts) < 4:
                 return Response(content='{"error":"no output"}', status_code=500, media_type="application/json")
-            raw = txt_dir.read_text()
-            appticket = ""
-            eticket = ""
-            m = re.search(r"appticket\(\d+bytes\):\s*(\S+)", raw)
-            if m: appticket = m.group(1)
-            m = re.search(r"eticket\(\d+bytes\):\s*(\S+)", raw)
-            if m: eticket = m.group(1)
+            _, appticket, eticket, steam_id = parts[0], parts[1], parts[2], parts[3]
 
             # POST to remote server to get one-time code
             try:
@@ -199,11 +192,11 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
                 )
                 if r.status_code == 200:
                     code = r.json().get("code", "")
-                    return Response(content=_json.dumps({"code": code}), media_type="application/json")
+                    return Response(content=json.dumps({"code": code}), media_type="application/json")
                 else:
-                    return Response(content=_json.dumps({"error": f"Remote server: {r.status_code} {r.text}"}), status_code=500, media_type="application/json")
+                    return Response(content=json.dumps({"error": f"Remote server: {r.status_code} {r.text}"}), status_code=500, media_type="application/json")
             except Exception as e:
-                return Response(content=_json.dumps({"error": f"Remote server unreachable: {e}"}), status_code=500, media_type="application/json")
+                return Response(content=json.dumps({"error": f"Remote server unreachable: {e}"}), status_code=500, media_type="application/json")
 
         except Exception as e:
             return Response(content='{"error":"' + str(e) + '"}', status_code=500, media_type="application/json")
