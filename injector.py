@@ -120,36 +120,17 @@ def _inject_peron_properties(tabs: list, steam_dir: pathlib.Path) -> None:
             ws = create_connection(tab["webSocketDebuggerUrl"], timeout=10)
             ws.settimeout(5)
             result = send_and_wait(ws, 1, "Runtime.evaluate", {"expression": PERON_EXTRACT_SCRIPT})
-            ws.close()
             val = result.get("result", {}).get("result", {}).get("value", "")
-            if not val:
+            if val:
+                appid = str(val)
+                log(f"Peron: found appId {appid} in {tab.get('title', tab_url)}")
+                send_and_wait(ws, 2, "Runtime.evaluate", {"expression": peron_source})
+                log(f"Peron injected into: {tab.get('title', tab_url)} ({appid})")
+            else:
                 log(f"Peron: no appId found in {tab.get('title', tab_url)}")
-                continue
-            appid = str(val)
-            log(f"Peron: found appId {appid} in {tab.get('title', tab_url)}")
-        except Exception as e:
-            log(f"Peron: extract error {e}")
-            continue
-
-        # Check if this appid is registered
-        try:
-            r = requests.get(f"http://127.0.0.1:3000/check/{appid}", timeout=3)
-            if r.status_code != 200:
-                log(f"Peron: app {appid} not registered ({r.status_code})")
-                continue
-        except Exception as e:
-            log(f"Peron: check error {e}")
-            continue
-
-        # Inject Peron
-        try:
-            ws = create_connection(tab["webSocketDebuggerUrl"], timeout=10)
-            ws.settimeout(5)
-            send_and_wait(ws, 1, "Runtime.evaluate", {"expression": peron_source})
             ws.close()
-            log(f"Peron injected into: {tab.get('title', tab_url)} ({appid})")
         except Exception as e:
-            log(f"Peron: inject error {e}")
+            log(f"Peron: error {e}")
 
 
 def inject_into_tab(target_url: str, source: str) -> bool:
