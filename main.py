@@ -107,7 +107,7 @@ def update_content_js() -> None:
 
 if __name__ == "__main__":
     # 1. Actualizar content.js antes de arrancar
-    update_content_js()
+    #update_content_js()
 
     # 2. Injector en background
     threading.Thread(target=setup_shared_context, args=(JS_FILE,), daemon=True).start()

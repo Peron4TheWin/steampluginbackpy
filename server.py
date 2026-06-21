@@ -1,10 +1,12 @@
 import os
 import logging
 import pathlib
+import json
 
 import requests
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from injector import go_online, go_offline, inject_into_tab
 
@@ -160,9 +162,103 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
         except Exception as e:
             return Response(content=str(e), status_code=500)
 
+    def _find_game_dir(appid: str, steam_dir: pathlib.Path) -> pathlib.Path | None:
+        """Busca la carpeta de instalacion del juego en las library folders de Steam"""
+        import winreg
+        # Check common install paths via libraryfolders.vdf
+        vdf_path = steam_dir / "steamapps" / "libraryfolders.vdf"
+        libs = [steam_dir]
+        if vdf_path.exists():
+            import re
+            for line in vdf_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                m = re.search(r'"path"\s+"(.+)"', line)
+                if m: libs.append(pathlib.Path(m.group(1).replace("\\\\", "\\")))
+        
+        for lib in libs:
+            manifest = lib / "steamapps" / f"appmanifest_{appid}.acf"
+            if manifest.exists():
+                for line in manifest.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    m = re.search(r'"installdir"\s+"(.+)"', line)
+                    if m:
+                        return lib / "steamapps" / "common" / m.group(1)
+        return None
+
+    @app.post("/crack/{appid}/install")
+    async def install_crack(appid: str):
+        """Descarga y extrae el crack en la carpeta del juego con progreso SSE"""
+        async def event_stream():
+            import zipfile, io, asyncio
+            zip_url = f"http://api.perondepot.xyz/mirror/fixedluas/{appid}.zip"
+            
+            # 1. Find game folder
+            yield f"data: {json.dumps({'status':'finding','pct':0})}\n\n"
+            await asyncio.sleep(0)
+            # Find Steam dir via registry
+            import winreg as _wr
+            steam_dir_f = js_file.parent
+            try:
+                for rk, k in [(_wr.HKEY_CURRENT_USER, r"Software\Valve\Steam"),
+                              (_wr.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Valve\Steam"),
+                              (_wr.HKEY_LOCAL_MACHINE, r"Software\Valve\Steam")]:
+                    with _wr.OpenKey(rk, k) as key:
+                        steam_dir_f = pathlib.Path(_wr.QueryValueEx(key, "SteamPath")[0].strip('"'))
+                        break
+            except: pass
+            game_dir = _find_game_dir(appid, steam_dir_f)
+            if not game_dir:
+                yield f"data: {json.dumps({'status':'error','msg':'Game folder not found. Is it installed?'})}\n\n"
+                return
+            
+            # 2. Download zip with progress
+            yield f"data: {json.dumps({'status':'downloading','pct':0,'msg':'Downloading crack...'})}\n\n"
+            try:
+                r = requests.get(zip_url, stream=True, timeout=120)
+                r.raise_for_status()
+                total = int(r.headers.get('content-length', 0))
+                downloaded = 0
+                chunks = []
+                last_pct = -1
+                for chunk in r.iter_content(chunk_size=65536):
+                    chunks.append(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = min(99, int(downloaded / total * 100))
+                        if pct > last_pct:
+                            last_pct = pct
+                            yield f"data: {json.dumps({'status':'downloading','pct':pct,'msg':f'Downloading... {pct}%'})}\n\n"
+                            await asyncio.sleep(0)
+            except Exception as e:
+                yield f"data: {json.dumps({'status':'error','msg':f'Download failed: {e}'})}\n\n"
+                return
+            
+            # 3. Extract
+            yield f"data: {json.dumps({'status':'extracting','pct':99,'msg':'Extracting...'})}\n\n"
+            try:
+                data = b''.join(chunks)
+                with zipfile.ZipFile(io.BytesIO(data)) as z:
+                    z.extractall(game_dir)
+                yield f"data: {json.dumps({'status':'done','pct':100,'msg':f'Crack installed to {game_dir}'})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'status':'error','msg':f'Extract failed: {e}'})}\n\n"
+        
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
     @app.get("/fixes/{appid}")
     async def get_fixes(appid: str):
-        return Response(content='[{"id":"fps_unlock","name":"FPS Unlock"},{"id":"skip_intro","name":"Skip Intro"},{"id":"fov_mod","name":"FOV Mod"}]', media_type="application/json")
+        try:
+            # Use stream=True and close immediately - just check status
+            r = requests.get(
+                f"http://api.perondepot.xyz/mirror/fixedluas/{appid}.zip",
+                timeout=10,
+                stream=True,
+            )
+            available = r.status_code == 200
+            r.close()
+            if available:
+                return Response(content=json.dumps({"available": True, "url": f"http://api.perondepot.xyz/mirror/fixedluas/{appid}.zip"}), media_type="application/json")
+            return Response(content=json.dumps({"available": False}), media_type="application/json")
+        except:
+            return Response(content=json.dumps({"available": False}), media_type="application/json")
 
     @app.post("/fixes/{appid}/apply")
     async def apply_fix(appid: str, request: Request):
@@ -259,5 +355,51 @@ def create_app(key_file: pathlib.Path, plugin_dir: pathlib.Path, js_file: pathli
         except Exception as e:
             return Response(content=str(e), status_code=500)
 
+
+    @app.post("/fixed/{appid}")
+    async def add_fixed(appid: str):
+        """Descarga el lua fijo (con setManifestid) para versiones crackeadas"""
+        try:
+            r = requests.get(
+                f"http://api.perondepot.xyz/mirror/fixedluas/{appid}.lua",
+                timeout=30,
+            )
+            if r.status_code != 200:
+                return Response(content="No fixed lua available", status_code=404)
+            # NO filtrar setManifestid - los luas fijos los necesitan
+            (plugin_dir / f"{appid}.lua").write_bytes(r.content)
+            log(f"Saved fixed {appid}.lua")
+            return Response(content="OK", status_code=200)
+        except Exception as e:
+            log(f"/fixed/{appid} error: {e}")
+            return Response(content=str(e), status_code=500)
+
+    @app.get("/hascrack/{appid}")
+    async def has_crack(appid: str):
+        """Chequea si existe un crack (zip) para este appid"""
+        try:
+            r = requests.get(
+                f"http://api.perondepot.xyz/mirror/fixedluas/{appid}.zip",
+                timeout=10,
+            )
+            if r.status_code == 200:
+                return Response(content='{"available":true}', media_type="application/json")
+            return Response(content='{"available":false}', media_type="application/json")
+        except:
+            return Response(content='{"available":false}', media_type="application/json")
+
+    @app.get("/hasfixed/{appid}")
+    async def has_fixed(appid: str):
+        """Chequea si existe un lua fijo para este appid"""
+        try:
+            r = requests.get(
+                f"http://api.perondepot.xyz/mirror/fixedluas/{appid}.lua",
+                timeout=10,
+            )
+            if r.status_code == 200:
+                return Response(content='{"available":true}', media_type="application/json")
+            return Response(content='{"available":false}', media_type="application/json")
+        except:
+            return Response(content='{"available":false}', media_type="application/json")
 
     return app
